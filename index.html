@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<title>Shuffleboard Touch – Pointer Fix</title>
+<style>
+html,body{
+  margin:0;
+  padding:0;
+  background:#111;
+  overflow:hidden;
+}
+canvas{
+  display:block;
+  margin:auto;
+  background:#e8dcc7;
+  touch-action:none;
+}
+#ui{
+  position:absolute;
+  top:10px;
+  width:100%;
+  text-align:center;
+  display:none;
+}
+button{
+  font-size:18px;
+  padding:10px 20px;
+  margin:0 8px;
+}
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <button onclick="restart(false)">Spela igen (Nivå 1)</button>
+  <button onclick="restart(true)">Nivå 2 – Precision</button>
+</div>
+
+<canvas id="game"></canvas>
+
+<script>
+/* ================= CANVAS ================= */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+function resize(){
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight * 0.9;
+}
+resize();
+window.addEventListener("resize", resize);
+
+/* ================= AUDIO ================= */
+const audio = new (window.AudioContext||window.webkitAudioContext)();
+
+function hitSound(){
+  const len = audio.sampleRate * 0.02;
+  const buffer = audio.createBuffer(1, len, audio.sampleRate);
+  const data = buffer.getChannelData(0);
+  for(let i=0;i<len;i++){
+    data[i] = (Math.random()*2-1) * Math.exp(-i/200);
+  }
+  const src = audio.createBufferSource();
+  src.buffer = buffer;
+  const filter = audio.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.value = 900;
+  const gain = audio.createGain();
+  gain.gain.value = 0.35;
+  src.connect(filter); filter.connect(gain); gain.connect(audio.destination);
+  src.start(); src.stop(audio.currentTime + 0.06);
+}
+
+/* ================= KONFIG ================= */
+const M=50, R=16, MAX=4;
+let FRICTION=0.985;
+const ZONES_L1=[60,140,220];
+const ZONES_L2=[40,90,140];
+let ZONES=[...ZONES_L1];
+
+/* ================= STATE ================= */
+let current=0;
+let active=null;
+let dragging=false;
+let sx=0, sy=0;
+let over=false;
+
+let idx=[0,0];
+let score=[0,0];
+let pucks=[];
+
+/* ================= PUCK ================= */
+function createPuck(player){
+  return{
+    x:player===0?M+70:canvas.width-M-70,
+    y:canvas.height/2,
+    vx:0,vy:0,r:R,
+    color:player===0?"#c0392b":"#2980b9",
+    moving:false,played:false,out:false,player
+  };
+}
+
+/* ================= POINTER INPUT ================= */
+function getPos(evt){
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: evt.clientX - r.left,
+    y: evt.clientY - r.top
+  };
+}
+
+canvas.addEventListener("pointerdown", e=>{
+  if(!active || active.moving) return;
+  const p = getPos(e);
+  if(Math.hypot(p.x-active.x, p.y-active.y) <= active.r*2){
+    dragging = true;
+    sx = p.x;
+    sy = p.y;
+    canvas.setPointerCapture(e.pointerId);
+  }
+});
+
+canvas.addEventListener("pointerup", e=>{
+  if(!dragging || !active) return;
+  dragging = false;
+  const p = getPos(e);
+
+  active.vx = (p.x - sx) * 0.12;
+  active.vy = (p.y - sy) * 0.12;
+  active.moving = true;
+  active.played = true;
+
+  active = null;
+  current = 1-current;
+});
+
+/* ================= COLLISION ================= */
+function collide(){
+  for(let i=0;i<pucks.length;i++){
+    for(let j=i+1;j<pucks.length;j++){
+      const a=pucks[i], b=pucks[j];
+      if(a.out||b.out) continue;
+      const dx=b.x-a.x, dy=b.y-a.y;
+      const d=Math.hypot(dx,dy);
+      if(d>0 && d<a.r+b.r){
+        hitSound();
+        const nx=dx/d, ny=dy/d;
+        const p=(a.vx*nx+a.vy*ny-b.vx*nx-b.vy*ny);
+        a.vx-=p*nx; a.vy-=p*ny;
+        b.vx+=p*nx; b.vy+=p*ny;
+        a.moving=b.moving=true;
+      }
+    }
+  }
+}
+
+/* ================= SCORE ================= */
+function puckScore(p){
+  if(p.out) return 0;
+  const d=p.player===0?(canvas.width-M-p.x):(p.x-M);
+  if(d<ZONES[0]) return 10;
+  if(d<ZONES[1]) return 5;
+  if(d<ZONES[2]) return 2;
+  return 0;
+}
+function allDone(){
+  return idx[0]>=MAX && idx[1]>=MAX && pucks.every(p=>p.played&&!p.moving);
+}
+function finish(){
+  score=[0,0];
+  pucks.forEach(p=>score[p.player]+=puckScore(p));
+  over=true;
+  document.getElementById("ui").style.display="block";
+}
+
+/* ================= SPAWN ================= */
+function spawn(){
+  if(over || idx[current]>=MAX) return;
+  const p=createPuck(current);
+  pucks.push(p);
+  active=p;
+  idx[current]++;
+}
+
+/* ================= UPDATE ================= */
+function update(){
+  collide();
+  pucks.forEach(p=>{
+    if(!p.moving||p.out) return;
+    p.x+=p.vx; p.y+=p.vy;
+    p.vx*=FRICTION; p.vy*=FRICTION;
+    if(p.y<p.r+M||p.y>canvas.height-M-p.r) p.vy*=-0.6;
+    if(p.x<M||p.x>canvas.width-M){p.out=true;p.moving=false}
+    if(Math.abs(p.vx)<0.05&&Math.abs(p.vy)<0.05) p.moving=false;
+  });
+  if(!over && !active && pucks.every(p=>!p.moving)) spawn();
+  if(!over && allDone()) finish();
+}
+
+/* ================= DRAW ================= */
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.strokeRect(M,M,canvas.width-2*M,canvas.height-2*M);
+
+  ctx.font="18px sans-serif";
+  ctx.fillStyle="#222";
+  ctx.textAlign="center";
+
+  const labels=[10,5,2];
+  for(let i=0;i<3;i++){
+    const a=i===0?0:ZONES[i-1];
+    const b=ZONES[i];
+    const mid=(a+b)/2;
+    ctx.fillText(labels[i],M+mid,M+30);
+    ctx.fillText(labels[i],canvas.width-M-mid,M+30);
+    ctx.beginPath();
+    ctx.moveTo(M+b,M); ctx.lineTo(M+b,canvas.height-M); ctx.stroke();
+    ctx.moveTo(canvas.width-M-b,M); ctx.lineTo(canvas.width-M-b,canvas.height-M); ctx.stroke();
+  }
+
+  pucks.forEach(p=>{
+    if(p.out) return;
+    ctx.fillStyle=p.color;
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+    ctx.fill();
+  });
+
+  if(over){
+    ctx.fillStyle="rgba(0,0,0,0.6)";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle="#fff";
+    ctx.font="28px sans-serif";
+    ctx.fillText(`Röd: ${score[0]}`,canvas.width/2,canvas.height/2-20);
+    ctx.fillText(`Blå: ${score[1]}`,canvas.width/2,canvas.height/2+20);
+  }
+}
+
+/* ================= RESTART ================= */
+function restart(lvl2){
+  FRICTION=lvl2?0.965:0.985;
+  ZONES=lvl2?[...ZONES_L2]:[...ZONES_L1];
+  pucks=[]; idx=[0,0]; score=[0,0];
+  current=0; over=false;
+  document.getElementById("ui").style.display="none";
+  spawn();
+}
+
+/* ================= START ================= */
+spawn();
+(function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+})();
+</script>
+
+</body>
+</html>
